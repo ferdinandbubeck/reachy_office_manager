@@ -6,6 +6,8 @@ and executed sequentially by the MovementManager.
 
 from __future__ import annotations
 import logging
+import math
+import random
 from typing import Tuple
 
 import numpy as np
@@ -87,6 +89,10 @@ class EmotionQueueMove(Move):  # type: ignore
             return (neutral_head_pose, np.array([0.0, 0.0], dtype=np.float64), 0.0)
 
 
+ANTENNA_FLICK_AMPLITUDE = math.radians(25)  # max extra antenna lift during a turn
+ANTENNA_FLICK_FULL_SCALE_DEG = 90.0  # turn size (deg) at which the flick reaches full amplitude
+
+
 class GotoQueueMove(Move):  # type: ignore
     """Wrapper for goto moves to work with the movement queue system."""
 
@@ -108,6 +114,24 @@ class GotoQueueMove(Move):  # type: ignore
         self.start_antennas = start_antennas or (0, 0)
         self.target_body_yaw = target_body_yaw
         self.start_body_yaw = start_body_yaw or 0
+
+        # Per-antenna randomness for the turn flick (see evaluate()), chosen
+        # once so it stays consistent for this move's whole duration rather
+        # than re-rolling every tick: each antenna gets its own random
+        # strength, and sometimes only one flicks at all - so turns don't
+        # always look like a perfectly symmetric, identical twitch.
+        self._flick_scale = (random.uniform(0.5, 1.0), random.uniform(0.5, 1.0))
+        if random.random() < 0.35:
+            silent = random.choice((0, 1))
+            self._flick_scale = (
+                (0.0, self._flick_scale[1]) if silent == 0 else (self._flick_scale[0], 0.0)
+            )
+        # Lean toward the turn direction: the antenna on the turn side
+        # lifts more, the other can dip below baseline (as if hanging) -
+        # like an animal's ears reacting to which way it's turning.
+        delta = self.target_body_yaw - self.start_body_yaw
+        turn_sign = 1.0 if delta > 1e-6 else (-1.0 if delta < -1e-6 else 0.0)
+        self._flick_lean = turn_sign * random.uniform(0.6, 1.3)
 
     @property
     def duration(self) -> float:
@@ -140,6 +164,22 @@ class GotoQueueMove(Move):  # type: ignore
                 ],
                 dtype=np.float64,
             )
+
+            # Add a "flick" bump peaking mid-turn, on top of the base
+            # interpolation above - antennas perk up briefly as Reachy
+            # turns, like a curious glance, then settle back to target.
+            # Scaled by how big the turn actually is (small look_at
+            # adjustments stay subtle, big turns read as more expressive),
+            # and asymmetric per antenna via _flick_scale/_flick_lean (set
+            # once in __init__) so it doesn't look like a robotic mirrored
+            # twitch every time.
+            turn_magnitude_deg = math.degrees(abs(self.target_body_yaw - self.start_body_yaw))
+            flick_scale = min(1.0, turn_magnitude_deg / ANTENNA_FLICK_FULL_SCALE_DEG)
+            if flick_scale > 0:
+                phase = math.sin(math.pi * t_clamped)
+                bump_l = ANTENNA_FLICK_AMPLITUDE * flick_scale * self._flick_scale[0] * (1.0 + self._flick_lean) * phase
+                bump_r = ANTENNA_FLICK_AMPLITUDE * flick_scale * self._flick_scale[1] * (1.0 - self._flick_lean) * phase
+                antennas = antennas + np.array([bump_l, bump_r], dtype=np.float64)
 
             # Interpolate body yaw
             body_yaw = self.start_body_yaw + (self.target_body_yaw - self.start_body_yaw) * t_clamped

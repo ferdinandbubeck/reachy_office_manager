@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<title>Office Availability</title>
+<style>
+  :root {
+    --free: #3C4BC8;
+    --occupied: #FF4B4B;
+    --neutral: #b0bec5;
+    --wall: #37474f;
+    --bg: #f4f5f8;
+    --ink: #1c2030;
+    --muted: #6b7280;
+    --card-border: #e4e6ef;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    margin: 0;
+    color: var(--ink);
+  }
+
+  /* ---------- header ---------- */
+  .app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(90deg, var(--free) 0%, #4d3fc0 100%);
+    color: white;
+    padding: 14px 28px;
+    box-shadow: 0 2px 10px rgba(60, 75, 200, 0.25);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 8px;
+    background: conic-gradient(from 220deg, var(--occupied) 0deg 180deg, white 180deg 360deg);
+    box-shadow: inset 0 0 0 2px rgba(255,255,255,0.6);
+  }
+  .brand-name { font-size: 18px; font-weight: 700; letter-spacing: 0.2px; }
+  .header-status {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12.5px; font-weight: 500; opacity: 0.95;
+    background: rgba(255,255,255,0.12);
+    padding: 6px 12px; border-radius: 20px;
+  }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #6cff9e;
+    box-shadow: 0 0 0 0 rgba(108,255,158,0.6);
+    animation: pulse 1.8s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(108,255,158,0.5); }
+    70% { box-shadow: 0 0 0 6px rgba(108,255,158,0); }
+    100% { box-shadow: 0 0 0 0 rgba(108,255,158,0); }
+  }
+
+  /* ---------- layout ---------- */
+  .layout {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 24px 28px;
+  }
+  .card {
+    background: white;
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(20,20,50,0.05);
+  }
+  .floorplan-card { padding: 16px; }
+  #floorplan {
+    width: 609px;
+    max-width: 90vw;
+    height: 700px;
+    border-radius: 8px;
+    display: block;
+  }
+  .desk {
+    cursor: pointer;
+    stroke: #263238;
+    stroke-width: 0.3;
+    transition: r 0.15s ease;
+  }
+  .desk:hover { stroke-width: 0.6; }
+
+  .legend {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+  }
+  .legend-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 500; color: var(--muted);
+    background: #f6f7fb; border: 1px solid var(--card-border);
+    padding: 5px 10px; border-radius: 20px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+  /* ---------- sidebar ---------- */
+  .sidebar { display: flex; flex-direction: column; gap: 18px; width: 340px; min-width: 300px; }
+  .panel { padding: 18px; }
+  .panel h2 {
+    font-size: 13px; margin: 0 0 14px; text-transform: uppercase;
+    letter-spacing: 0.6px; color: var(--muted); font-weight: 700;
+  }
+  #detail-empty { color: #9aa0ab; font-size: 13px; }
+
+  .status-group {
+    display: flex; border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--card-border); margin-bottom: 14px;
+  }
+  .status-group button {
+    flex: 1; border: none; padding: 9px 0; font-size: 13px; font-weight: 600;
+    cursor: pointer; background: white; color: var(--muted);
+  }
+  .status-group button.active.is-free { background: var(--free); color: white; }
+  .status-group button.active.is-occupied { background: var(--occupied); color: white; }
+  .status-group button:not(.active):hover { background: #f6f7fb; }
+
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .field input {
+    width: 100%; padding: 7px 9px; box-sizing: border-box;
+    border: 1px solid var(--card-border); border-radius: 6px; font-size: 13px;
+  }
+  button.action {
+    padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 13px; font-weight: 600; background: var(--free); color: white;
+  }
+  button.action:hover { filter: brightness(1.08); }
+  .booking-row {
+    font-size: 12.5px; background: #f6f7fb; border: 1px solid var(--card-border);
+    padding: 9px 10px; border-radius: 7px; margin-bottom: 10px; line-height: 1.5;
+  }
+
+  /* ---------- activity feed ---------- */
+  .activity-panel { flex: 1; min-height: 0; }
+  #activity-list {
+    display: flex; flex-direction: column; gap: 6px;
+    max-height: 340px; overflow-y: auto;
+  }
+  .activity-empty { color: #9aa0ab; font-size: 13px; }
+  .activity-item {
+    display: flex; gap: 8px; align-items: flex-start;
+    font-size: 12px; padding: 7px 8px; border-radius: 6px;
+    background: #f6f7fb;
+  }
+  .activity-item.error { background: #fff0f0; }
+  .activity-dot {
+    width: 7px; height: 7px; border-radius: 50%; margin-top: 4px; flex-shrink: 0;
+    background: var(--free);
+  }
+  .activity-item.error .activity-dot { background: var(--occupied); }
+  .activity-tool { font-weight: 700; color: var(--ink); }
+  .activity-time { color: #9aa0ab; font-size: 11px; }
+  .activity-params { color: var(--muted); word-break: break-word; }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <span class="brand-name">Office Availability</span>
+  </div>
+  <div class="header-status"><span class="live-dot"></span> Live</div>
+</header>
+
+<div class="layout">
+  <div class="card floorplan-card">
+    <svg id="floorplan" viewBox="0 0 87 100" preserveAspectRatio="none"></svg>
+    <div class="legend">
+      <span class="legend-chip"><span class="dot" style="background:var(--free)"></span> Frei</span>
+      <span class="legend-chip"><span class="dot" style="background:var(--occupied)"></span> Belegt</span>
+      <span class="legend-chip">Klicke auf einen Marker für Details</span>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <div class="card panel">
+      <h2>Details</h2>
+      <div id="detail-empty">Klicke auf einen Schreibtisch oder Meetingraum.</div>
+      <div id="detail-content" style="display:none"></div>
+    </div>
+
+    <div class="card panel activity-panel">
+      <h2>MCP Aktivität</h2>
+      <div id="activity-list"><div class="activity-empty">Noch keine Aufrufe.</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const svg = document.getElementById('floorplan');
+let layout = [];
+let state = {};
+let selected = null; // {kind: 'desk'|'room', id}
+
+async function fetchLayout() {
+  const res = await fetch('/api/layout');
+  layout = await res.json();
+}
+
+async function fetchState() {
+  const res = await fetch('/api/state');
+  const rooms = await res.json();
+  state = {};
+  for (const r of rooms) state[r.room_id] = r;
+}
+
+function deskOccupied(roomId, deskId) {
+  const room = state[roomId];
+  if (!room || !room.desks) return false;
+  const d = room.desks.find(d => d.id === deskId);
+  return d ? !!d.occupied : false;
+}
+
+function render() {
+  svg.innerHTML = '';
+
+  // Real floor-plan photo as background, if present at frontend/floorplan.*
+  // (drop the file there - a missing <image> src just renders nothing in
+  // SVG, so this is safe even before the file exists).
+  const bg = document.createElementNS('http://www.w3.org/2000/svg', 'image');
+  bg.setAttribute('href', '/static/floorplan.jpg');
+  bg.setAttribute('x', 0);
+  bg.setAttribute('y', 0);
+  bg.setAttribute('width', 87);
+  bg.setAttribute('height', 100);
+  bg.setAttribute('preserveAspectRatio', 'none');
+  svg.appendChild(bg);
+
+  // No room boxes anywhere - only markers on actual chairs. Desk chairs
+  // toggle individually; meeting-room chairs all reflect that room's
+  // booked/free status and open the room's booking panel.
+  for (const room of layout) {
+    for (const desk of room.desks) {
+      const marker = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      marker.setAttribute('cx', desk.x);
+      marker.setAttribute('cy', desk.y);
+      marker.setAttribute('r', 1.6);
+      marker.classList.add('desk');
+      const occ = deskOccupied(room.id, desk.id);
+      marker.style.fill = occ ? 'var(--occupied)' : 'var(--free)';
+      marker.addEventListener('click', () => selectDesk(room.id, desk.id));
+      svg.appendChild(marker);
+    }
+
+    for (const seat of room.seats || []) {
+      const marker = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      marker.setAttribute('cx', seat.x);
+      marker.setAttribute('cy', seat.y);
+      marker.setAttribute('r', 1.6);
+      marker.classList.add('desk');
+      const s = state[room.id];
+      marker.style.fill = s && s.booked_now ? 'var(--occupied)' : 'var(--free)';
+      marker.addEventListener('click', () => selectRoom(room.id));
+      svg.appendChild(marker);
+    }
+  }
+}
+
+function selectDesk(roomId, deskId) {
+  selected = { kind: 'desk', roomId, deskId };
+  renderDetail();
+}
+
+function selectRoom(roomId) {
+  selected = { kind: 'room', roomId };
+  renderDetail();
+}
+
+/** Renders a "Frei | Belegt" segmented control. `isOccupied` decides which
+ * side is active; clicking the *other* side calls the matching callback. */
+function statusGroupHtml(isOccupied) {
+  return `
+    <div class="status-group">
+      <button type="button" id="status-free" class="${!isOccupied ? 'active is-free' : ''}">Frei</button>
+      <button type="button" id="status-occupied" class="${isOccupied ? 'active is-occupied' : ''}">Belegt</button>
+    </div>
+  `;
+}
+
+function renderDetail() {
+  const empty = document.getElementById('detail-empty');
+  const content = document.getElementById('detail-content');
+  if (!selected) { empty.style.display = 'block'; content.style.display = 'none'; return; }
+  empty.style.display = 'none';
+  content.style.display = 'block';
+
+  if (selected.kind === 'desk') {
+    const occ = deskOccupied(selected.roomId, selected.deskId);
+    content.innerHTML = `
+      <div class="booking-row"><b>${selected.deskId}</b></div>
+      ${statusGroupHtml(occ)}
+      <div class="field"><label>Name (optional)</label><input id="occ-name" placeholder="z.B. Anna"></div>
+    `;
+    document.getElementById('status-free').addEventListener('click', async () => {
+      if (!occ) return;
+      await fetch(`/api/desks/${selected.deskId}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ occupied: false }),
+      });
+      await refresh();
+    });
+    document.getElementById('status-occupied').addEventListener('click', async () => {
+      if (occ) return;
+      const name = document.getElementById('occ-name').value || null;
+      await fetch(`/api/desks/${selected.deskId}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ occupied: true, occupied_by: name }),
+      });
+      await refresh();
+    });
+  } else {
+    const room = layout.find(r => r.id === selected.roomId);
+    const s = state[selected.roomId] || {};
+    let html = `<div class="booking-row"><b>${room.name}</b><br>Kapazität: ${room.capacity}</div>`;
+    html += statusGroupHtml(!!s.booked_now);
+
+    if (s.current_booking) {
+      html += `<div class="booking-row">Aktuell: <b>${s.current_booking.title}</b><br>
+        ${s.current_booking.start_time.slice(11,16)} - ${s.current_booking.end_time.slice(11,16)}</div>`;
+    }
+    if (s.upcoming_bookings && s.upcoming_bookings.length) {
+      const rest = s.upcoming_bookings.filter(b => !s.current_booking || b.id !== s.current_booking.id);
+      if (rest.length) {
+        html += `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Weitere Buchungen:</div>`;
+        for (const b of rest) {
+          html += `<div class="booking-row">${b.title} (${b.start_time.slice(11,16)}-${b.end_time.slice(11,16)})</div>`;
+        }
+      }
+    }
+    if (!s.booked_now) {
+      html += `
+        <div class="field"><label>Titel</label><input id="book-title" placeholder="z.B. Standup"></div>
+        <div class="field"><label>Dauer (Minuten)</label><input id="book-duration" type="number" value="30"></div>
+        <button class="action" id="book-btn">Jetzt buchen</button>
+      `;
+    }
+    content.innerHTML = html;
+
+    document.getElementById('status-free').addEventListener('click', async () => {
+      if (!s.booked_now || !s.current_booking) return;
+      await fetch(`/api/bookings/${s.current_booking.id}/cancel`, { method: 'POST' });
+      await refresh();
+    });
+    document.getElementById('status-occupied').addEventListener('click', () => {
+      if (s.booked_now) return;
+      document.getElementById('book-title')?.focus();
+    });
+    if (!s.booked_now) {
+      document.getElementById('book-btn').addEventListener('click', async () => {
+        const title = document.getElementById('book-title').value || 'Meeting';
+        const duration = parseInt(document.getElementById('book-duration').value, 10) || 30;
+        const res = await fetch(`/api/rooms/${selected.roomId}/book`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, duration_minutes: duration }),
+        });
+        if (!res.ok) { alert('Buchung fehlgeschlagen: ' + (await res.json()).detail); return; }
+        await refresh();
+      });
+    }
+  }
+}
+
+let lastLogId = null;
+async function fetchActivity() {
+  const res = await fetch('/api/logs?limit=30');
+  const logs = await res.json();
+  const list = document.getElementById('activity-list');
+  if (!logs.length) {
+    list.innerHTML = '<div class="activity-empty">Noch keine Aufrufe.</div>';
+    return;
+  }
+  list.innerHTML = logs.map(entry => {
+    const time = new Date(entry.ts).toLocaleTimeString('de-DE');
+    const params = entry.params && Object.keys(entry.params).length
+      ? Object.entries(entry.params).map(([k, v]) => `${k}=${v}`).join(', ')
+      : '';
+    return `
+      <div class="activity-item ${entry.ok ? '' : 'error'}">
+        <span class="activity-dot"></span>
+        <div>
+          <span class="activity-tool">${entry.tool}</span>
+          <span class="activity-time">${time}</span>
+          ${params ? `<div class="activity-params">${params}</div>` : ''}
+          ${!entry.ok && entry.error ? `<div class="activity-params">Fehler: ${entry.error}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function refresh() {
+  await fetchState();
+  render();
+  renderDetail();
+}
+
+async function main() {
+  await fetchLayout();
+  await refresh();
+  await fetchActivity();
+  setInterval(refresh, 5000);
+  setInterval(fetchActivity, 2000);
+}
+
+main();
+</script>
+</body>
+</html>

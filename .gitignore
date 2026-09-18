@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Secrets
+.env
+
+# Local runtime state (not project source)
+nat/src/ces_tutorial/agent_memory.db
+office-mcp/*.db
+

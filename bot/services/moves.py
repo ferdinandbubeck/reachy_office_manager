@@ -34,6 +34,7 @@ Safety
 from __future__ import annotations
 import time
 import logging
+import random
 import threading
 from queue import Empty, Queue
 from typing import Any, Dict, Tuple
@@ -68,6 +69,7 @@ class BreathingMove(Move):  # type: ignore
         self,
         interpolation_start_pose: NDArray[np.float32],
         interpolation_start_antennas: Tuple[float, float],
+        interpolation_start_body_yaw: float = 0.0,
         interpolation_duration: float = 1.0,
     ):
         """Initialize breathing move.
@@ -75,6 +77,7 @@ class BreathingMove(Move):  # type: ignore
         Args:
             interpolation_start_pose: 4x4 matrix of current head pose to interpolate from
             interpolation_start_antennas: Current antenna positions to interpolate from
+            interpolation_start_body_yaw: Current body yaw (radians) to hold while breathing
             interpolation_duration: Duration of interpolation to neutral (seconds)
 
         """
@@ -82,31 +85,59 @@ class BreathingMove(Move):  # type: ignore
         self.interpolation_start_antennas = np.array(interpolation_start_antennas)
         self.interpolation_duration = interpolation_duration
 
-        # Neutral positions for breathing base
-        self.neutral_head_pose = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
+        # Breathe around whatever pose/body_yaw Reachy was actually holding
+        # when it went idle (eg after a look_at turn) - not a fixed
+        # forward-facing "neutral". Otherwise every idle period would
+        # visibly snap the robot back to face front.
+        self.base_head_pose = interpolation_start_pose
+        self.base_body_yaw = float(interpolation_start_body_yaw)
         self.neutral_antennas = np.array([0.0, 0.0])
 
         # Breathing parameters
         self.breathing_z_amplitude = 0.005  # 5mm gentle breathing
         self.breathing_frequency = 0.1  # Hz (6 breaths per minute)
-        self.antenna_sway_amplitude = np.deg2rad(15)  # 15 degrees
-        self.antenna_frequency = 0.5  # Hz (faster antenna sway)
+        self.antenna_sway_amplitude = np.deg2rad(15)  # 15 degrees max sway
+        self.antenna_frequency = 0.5  # Hz (base antenna sway rate)
+
+        # Natural, asymmetric antenna idle motion: each antenna has its own
+        # slightly detuned sway rate/phase (so they drift in and out of sync
+        # instead of mirroring each other), and its own slow "presence"
+        # envelope that fades its amplitude up and down independently - the
+        # two envelopes run at different, unrelated rates, so which
+        # antenna(s) are currently moving (one, the other, both, or neither)
+        # keeps naturally changing rather than repeating in lockstep.
+        rng = random.Random()
+        self._antenna_freq = (
+            self.antenna_frequency * rng.uniform(0.85, 1.15),
+            self.antenna_frequency * rng.uniform(0.85, 1.15),
+        )
+        self._antenna_phase = (rng.uniform(0, 2 * np.pi), rng.uniform(0, 2 * np.pi))
+        self._presence_freq = (rng.uniform(0.05, 0.09), rng.uniform(0.06, 0.11))
+        self._presence_phase = (rng.uniform(0, 2 * np.pi), rng.uniform(0, 2 * np.pi))
 
     @property
     def duration(self) -> float:
         """Duration property required by official Move interface."""
         return float("inf")  # Continuous breathing (never ends naturally)
 
+    def _antenna_sway_for(self, index: int, breathing_time: float) -> float:
+        """One antenna's sway at this instant: its own oscillation, scaled
+        by its own presence envelope (which fades between ~0 and full
+        independently of the other antenna)."""
+        presence = 0.5 + 0.5 * np.sin(
+            2 * np.pi * self._presence_freq[index] * breathing_time + self._presence_phase[index]
+        )
+        oscillation = np.sin(2 * np.pi * self._antenna_freq[index] * breathing_time + self._antenna_phase[index])
+        return float(self.antenna_sway_amplitude * presence * oscillation)
+
     def evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
         """Evaluate breathing move at time t."""
         if t < self.interpolation_duration:
-            # Phase 1: Interpolate to neutral base position
+            # Phase 1: hold the head pose steady (no drift toward some
+            # other "neutral") while antennas ease from wherever they were
+            # towards the sway's zero baseline.
             interpolation_t = t / self.interpolation_duration
-
-            # Interpolate head pose
-            head_pose = linear_pose_interpolation(
-                self.interpolation_start_pose, self.neutral_head_pose, interpolation_t,
-            )
+            head_pose = self.base_head_pose
 
             # Interpolate antennas
             antennas_interp = (
@@ -115,19 +146,29 @@ class BreathingMove(Move):  # type: ignore
             antennas = antennas_interp.astype(np.float64)
 
         else:
-            # Phase 2: Breathing patterns from neutral base
+            # Phase 2: Breathing patterns composed on top of the held pose
             breathing_time = t - self.interpolation_duration
 
-            # Gentle z-axis breathing
+            # Gentle z-axis breathing, offset from the held pose (not an
+            # absolute forward-facing pose - see base_head_pose above)
             z_offset = self.breathing_z_amplitude * np.sin(2 * np.pi * self.breathing_frequency * breathing_time)
-            head_pose = create_head_pose(x=0, y=0, z=z_offset, roll=0, pitch=0, yaw=0, degrees=True, mm=False)
+            breathing_offset_pose = create_head_pose(x=0, y=0, z=z_offset, roll=0, pitch=0, yaw=0, degrees=True, mm=False)
+            head_pose = compose_world_offset(self.base_head_pose, breathing_offset_pose, reorthonormalize=True)
 
-            # Antenna sway (opposite directions)
-            antenna_sway = self.antenna_sway_amplitude * np.sin(2 * np.pi * self.antenna_frequency * breathing_time)
-            antennas = np.array([antenna_sway, -antenna_sway], dtype=np.float64)
+            # Antenna sway: independent per antenna (own rate/phase), each
+            # scaled by its own slowly-drifting presence envelope - see
+            # __init__ for why this reads as natural/asymmetric rather than
+            # a perfect mirrored oscillation.
+            antennas = np.array(
+                [
+                    self._antenna_sway_for(0, breathing_time),
+                    -self._antenna_sway_for(1, breathing_time),
+                ],
+                dtype=np.float64,
+            )
 
         # Return in official Move interface format: (head_pose, antennas_array, body_yaw)
-        return (head_pose, antennas, 0.0)
+        return (head_pose, antennas, self.base_body_yaw)
 
 
 def combine_full_body(primary_pose: FullBodyPose, secondary_pose: FullBodyPose) -> FullBodyPose:
@@ -268,6 +309,7 @@ class MovementManager:
         self.target_period = 1.0 / self.target_frequency
 
         self._stop_event = threading.Event()
+        self._external_head_control = threading.Event()
         self._thread: threading.Thread | None = None
         self._is_listening = False
         self._last_commanded_pose: FullBodyPose = clone_full_body_pose(self.state.last_primary_pose)
@@ -312,6 +354,21 @@ class MovementManager:
         self._status_lock = threading.Lock()
         self._freq_stats = LoopFrequencyStats()
         self._freq_snapshot = LoopFrequencyStats()
+
+    def set_external_control(self, enabled: bool) -> None:
+        """Pause/resume this manager's own set_target calls.
+
+        The daemon's built-in start_head_tracking() drives the head via its
+        own internal control loop - if we keep issuing our idle/breathing
+        set_target calls at 100Hz at the same time, the two fight over the
+        same motors and tracking looks jittery/unreliable. Call this with
+        True right before enabling daemon tracking, False right after
+        disabling it.
+        """
+        if enabled:
+            self._external_head_control.set()
+        else:
+            self._external_head_control.clear()
 
     def queue_move(self, move: Move) -> None:
         """Queue a primary move to run after the currently executing one.
@@ -500,10 +557,23 @@ class MovementManager:
             idle_for = current_time - self.state.last_activity_time
             if idle_for >= self.idle_inactivity_delay:
                 try:
-                    # These 2 functions return the latest available sensor data from the robot, but don't perform I/O synchronously.
-                    # Therefore, we accept calling them inside the control loop.
+                    # Antennas: live sensor read is fine as an interpolation
+                    # start point (just eases the sway in smoothly).
                     _, current_antennas = self.current_robot.get_current_joint_positions()
-                    current_head_pose = self.current_robot.get_current_head_pose()
+
+                    # Head/body_yaw: use our own last *commanded* pose, not a
+                    # live sensor read. The head hasn't necessarily finished
+                    # settling the instant a move ends, so a live read here
+                    # can catch transient overshoot (eg a nonzero roll after
+                    # a supposedly flat look_at("front")) - and breathing
+                    # would then hold that noise as its base indefinitely.
+                    # The commanded target is exact (roll=0 for a plain
+                    # look_at) and is what we actually want to hold.
+                    if self.state.last_primary_pose is not None:
+                        current_head_pose, _, current_body_yaw = self.state.last_primary_pose
+                    else:
+                        current_head_pose = self.current_robot.get_current_head_pose()
+                        current_body_yaw = 0.0
 
                     self._breathing_active = True
                     self.state.update_activity()
@@ -511,6 +581,7 @@ class MovementManager:
                     breathing_move = BreathingMove(
                         interpolation_start_pose=current_head_pose,
                         interpolation_start_antennas=current_antennas,
+                        interpolation_start_body_yaw=current_body_yaw,
                         interpolation_duration=1.0,
                     )
                     self.move_queue.append(breathing_move)
@@ -788,20 +859,23 @@ class MovementManager:
             # 1) Poll external commands and apply pending offsets (atomic snapshot)
             self._poll_signals(loop_start)
 
-            # 2) Manage the primary move queue (start new move, end finished move, breathing)
-            self._update_primary_motion(loop_start)
+            # While the daemon's own head-tracking is active, stay out of its
+            # way entirely - don't compose/issue a competing pose this tick.
+            if not self._external_head_control.is_set():
+                # 2) Manage the primary move queue (start new move, end finished move, breathing)
+                self._update_primary_motion(loop_start)
 
-            # 3) Update vision-based secondary offsets
-            self._update_face_tracking(loop_start)
+                # 3) Update vision-based secondary offsets
+                self._update_face_tracking(loop_start)
 
-            # 4) Build primary and secondary full-body poses, then fuse them
-            head, antennas, body_yaw = self._compose_full_body_pose(loop_start)
+                # 4) Build primary and secondary full-body poses, then fuse them
+                head, antennas, body_yaw = self._compose_full_body_pose(loop_start)
 
-            # 5) Apply listening antenna freeze or blend-back
-            antennas_cmd = self._calculate_blended_antennas(antennas)
+                # 5) Apply listening antenna freeze or blend-back
+                antennas_cmd = self._calculate_blended_antennas(antennas)
 
-            # 6) Single set_target call - the only control point
-            self._issue_control_command(head, antennas_cmd, body_yaw)
+                # 6) Single set_target call - the only control point
+                self._issue_control_command(head, antennas_cmd, body_yaw)
 
             # 7) Adaptive sleep to align to next tick, then publish shared state
             sleep_time, freq_stats = self._schedule_next_tick(loop_start, freq_stats)

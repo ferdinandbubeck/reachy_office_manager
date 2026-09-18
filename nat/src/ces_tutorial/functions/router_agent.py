@@ -36,6 +36,7 @@ async def router_agent_fn(config: RouterAgentConfig, builder: Builder):
     from nat.data_models.api_server import ChatResponse, ChatResponseChoice, Usage, ChoiceMessage
     from ces_tutorial.openai_chat_request import OpenAIChatRequest as ChatRequest
     from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+    import asyncio
     import time
     
     # Get the router function
@@ -131,29 +132,29 @@ async def router_agent_fn(config: RouterAgentConfig, builder: Builder):
             content_type = type(content).__name__
             
             if isinstance(content, list):
-                logger.warn(f"{prefix}: Message {idx} - role: {msg_dict.get('role')}, content is list with {len(content)} items")
+                logger.debug(f"{prefix}: Message {idx} - role: {msg_dict.get('role')}, content is list with {len(content)} items")
                 for i, item in enumerate(content):
                     if isinstance(item, dict):
-                        logger.warn(f"{prefix}:   Item {i} - type: {item.get('type')}, keys: {list(item.keys())}")
+                        logger.debug(f"{prefix}:   Item {i} - type: {item.get('type')}, keys: {list(item.keys())}")
                     else:
-                        logger.warn(f"{prefix}:   Item {i} - {type(item).__name__}")
+                        logger.debug(f"{prefix}:   Item {i} - {type(item).__name__}")
             else:
-                logger.warn(f"{prefix}: Message {idx} - role: {msg_dict.get('role')}, content type: {content_type}, length: {len(str(content)) if content else 0}")
+                logger.debug(f"{prefix}: Message {idx} - role: {msg_dict.get('role')}, content type: {content_type}, length: {len(str(content)) if content else 0}")
     
     async def _response_fn(chat_request: ChatRequest) -> ChatResponse:
         """Route the request based on intent."""
         
         try:
-            logger.warn(f"RouterAgent: Processing request with {len(chat_request.messages)} messages")
+            logger.debug(f"RouterAgent: Processing request with {len(chat_request.messages)} messages")
             
             # Log message details to check for images
             _log_message_details(chat_request.messages)
             
             # Step 1: Call the router to determine intent
-            logger.warn("RouterAgent: Calling router to determine intent...")
+            logger.debug("RouterAgent: Calling router to determine intent...")
             try:
                 router_response = await router_function.ainvoke(chat_request)
-                logger.warn(f"RouterAgent: Router response received: {type(router_response)}")
+                logger.debug(f"RouterAgent: Router response received: {type(router_response)}")
             except Exception as e:
                 logger.error(f"RouterAgent: Error calling router function: {e}", exc_info=True)
                 raise
@@ -161,7 +162,7 @@ async def router_agent_fn(config: RouterAgentConfig, builder: Builder):
             # Extract the route from the router response
             try:
                 route = router_response.choices[0].message.content
-                logger.warn(f"RouterAgent: Router determined intent as '{route}'")
+                logger.debug(f"RouterAgent: Router determined intent as '{route}'")
             except Exception as e:
                 logger.error(f"RouterAgent: Error extracting route from response: {e}", exc_info=True)
                 logger.error(f"RouterAgent: Router response structure: {router_response}")
@@ -169,16 +170,16 @@ async def router_agent_fn(config: RouterAgentConfig, builder: Builder):
             
             # Step 2: Route based on the intent
             if route == "chit_chat":
-                logger.warn("RouterAgent: Routing to chitchat LLM")
+                logger.debug("RouterAgent: Routing to chitchat LLM")
                 
                 try:
                     # Convert messages to LangChain format and redact images
                     langchain_messages = _convert_to_langchain_messages(chat_request.messages, redact_images=True)
-                    logger.warn(f"RouterAgent: Converted {len(langchain_messages)} messages for chitchat LLM (images redacted)")
+                    logger.debug(f"RouterAgent: Converted {len(langchain_messages)} messages for chitchat LLM (images redacted)")
                     
                     # Call the chitchat LLM
                     response = chitchat_llm.invoke(langchain_messages)
-                    logger.warn(f"RouterAgent: Chitchat LLM response received: {type(response)}")
+                    logger.debug(f"RouterAgent: Chitchat LLM response received: {type(response)}")
                     
                     # Extract content and create response
                     content = response.content if hasattr(response, 'content') else str(response)
@@ -189,25 +190,25 @@ async def router_agent_fn(config: RouterAgentConfig, builder: Builder):
                     raise
             
             elif route == "image_understanding":
-                logger.warn("RouterAgent: Routing to image understanding LLM")
+                logger.debug("RouterAgent: Routing to image understanding LLM")
                 
                 try:
                     # Convert messages to LangChain format, preserving images
                     langchain_messages = _convert_to_langchain_messages(chat_request.messages, redact_images=False)
-                    logger.warn(f"RouterAgent: Converted {len(langchain_messages)} messages for image LLM")
+                    logger.debug(f"RouterAgent: Converted {len(langchain_messages)} messages for image LLM")
                     
                     # Log to verify images are present
                     for idx, msg in enumerate(langchain_messages):
                         content = msg.content
                         if isinstance(content, list):
-                            logger.warn(f"RouterAgent: [IMAGE PATH] Message {idx} has list content with {len(content)} items")
+                            logger.debug(f"RouterAgent: [IMAGE PATH] Message {idx} has list content with {len(content)} items")
                             for i, item in enumerate(content):
                                 if isinstance(item, dict) and item.get('type') == 'image_url':
-                                    logger.warn(f"RouterAgent: [IMAGE PATH] Found image_url at message {idx}, item {i}")
+                                    logger.debug(f"RouterAgent: [IMAGE PATH] Found image_url at message {idx}, item {i}")
                     
                     # Call the image LLM
                     response = image_llm.invoke(langchain_messages)
-                    logger.warn(f"RouterAgent: Image LLM response received: {type(response)}")
+                    logger.debug(f"RouterAgent: Image LLM response received: {type(response)}")
                     
                     # Extract content and create response
                     content = response.content if hasattr(response, 'content') else str(response)
@@ -218,14 +219,14 @@ async def router_agent_fn(config: RouterAgentConfig, builder: Builder):
                     raise
                     
             else:  # route == "other" or any other value
-                logger.warn(f"RouterAgent: Routing to agent function for '{route}' intent")
+                logger.debug(f"RouterAgent: Routing to agent function for '{route}' intent")
                 
                 try:
                     # Convert messages to dict format
                     # NOTE: Set redact_images=False if you want the agent to see images
                     # (assuming you have a multimodal LLM backing the agent).
                     nat_messages = _convert_to_nat_messages(chat_request.messages, redact_images=True)
-                    logger.warn(f"RouterAgent: Converted {len(nat_messages)} messages for agent")
+                    logger.debug(f"RouterAgent: Converted {len(nat_messages)} messages for agent")
                     
                     # Manually construct the input dictionary for the agent.
                     # We pass a dict that matches the standard ChatRequestOrMessage structure.
@@ -235,11 +236,29 @@ async def router_agent_fn(config: RouterAgentConfig, builder: Builder):
                         "model": chat_request.model if hasattr(chat_request, 'model') else "nemotron"
                     }
                     
-                    # Call the agent function with the dict
-                    agent_response = await agent_function.ainvoke(agent_input)
-                    logger.warn(f"RouterAgent: Agent response received: {type(agent_response)}")
-                    return agent_response
-                    
+                    # Call the agent function with the dict. Guarded by a
+                    # timeout: the ReAct agent's strict Thought/Action text
+                    # format can get stuck retrying indefinitely on requests
+                    # it can't cleanly fulfill (e.g. asking it to describe
+                    # something visual, which it has no tool for), which
+                    # otherwise stalls the reply until the client gives up.
+                    try:
+                        agent_response = await asyncio.wait_for(
+                            # 45s, not 15s: reachy_look_around alone can take
+                            # ~15s+ (3 directions, each a physical turn +
+                            # settle + a full vision API round-trip), so 15s
+                            # was timing that tool out on every use.
+                            agent_function.ainvoke(agent_input), timeout=45.0
+                        )
+                        logger.debug(f"RouterAgent: Agent response received: {type(agent_response)}")
+                        return agent_response
+                    except asyncio.TimeoutError:
+                        logger.warning("RouterAgent: Agent call timed out after 45s, falling back to a short reply")
+                        return _create_chat_response(
+                            "Sorry, das hat gerade zu lange gedauert. Kannst du das nochmal einzeln sagen?",
+                            "agent_timeout_fallback",
+                        )
+
                 except Exception as e:
                     logger.error(f"RouterAgent: Error in agent path: {e}", exc_info=True)
                     raise

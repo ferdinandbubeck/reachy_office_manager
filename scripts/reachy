@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Single entry point: reachy start|stop|restart|status [services...]
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+cmd="${1:-start}"
+[ $# -gt 0 ] && shift || true
+
+case "$cmd" in
+  start)
+    exec python3 "$DIR/dev.py" start "$@"
+    ;;
+  stop)
+    exec python3 "$DIR/dev.py" stop "$@"
+    ;;
+  status)
+    exec python3 "$DIR/dev.py" status "$@"
+    ;;
+  restart)
+    python3 "$DIR/dev.py" stop "$@"
+    exec python3 "$DIR/dev.py" start "$@"
+    ;;
+  *)
+    echo "Usage: reachy {start|stop|restart|status} [service...]" >&2
+    echo "Services: bot, nat, mcp, webapp" >&2
+    exit 1
+    ;;
+esac

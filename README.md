@@ -1,151 +1,176 @@
-# Reachy Mini Robot with NeMo Agent Toolkit Tutorial
+# Reachy Office Manager
 
-This tutorial showcases a real-time AI agent built with the **NVIDIA NeMo Agent Toolkit**, powered by **NVIDIA Nemotron models**, controlling a **Reachy Mini Robot**. The agent uses an intelligent LLM router to dynamically route between:
-- **Nemotron nano text** for text-based interactions
-- **Nemotron nano VLM** (Vision Language Model) for visual understanding
-- **REACT agent** for tool-based actions
+A real-time voice AI agent, embodied as a **Reachy Mini** desk robot, acting as the
+**valantic Office Manager**: it sees the room, talks to you, manages office desk/meeting-room
+bookings, remembers things about you across conversations, and can look things up on the web.
+
+Built on the **NVIDIA NeMo Agent Toolkit** (tool-calling agent + LLM router) and
+**pipecat** (real-time voice/video pipeline), with a custom **office availability/booking
+MCP server** and a live web dashboard.
 
 ![Reachy Mini Robot Demo](ces_tutorial.png)
 
+## What it does
+
+- **Voice conversation** over WebRTC (browser mic/speaker), German by default.
+- **Vision on demand**: describes what it sees, counts people in the room, or does a
+  "look around" scan (turns left/front/right, remembers what it saw for the rest of the
+  conversation) — never a stale/automatic camera attach, only when the agent actually needs to look.
+- **Office management**: checks and books free desks/meeting rooms live via MCP tools,
+  gives spoken directions to the room, re-checks availability before confirming a booking.
+- **Physical personality**: gestures and emotions (used sparingly, real moments only),
+  face tracking, natural idle breathing/sway.
+- **Persistent memory** across all conversations (SQLite-backed) — remembers stated
+  preferences and recalls them instead of asking twice.
+- **Web search** for anything current it can't know from training (cafeteria menu,
+  restaurants, opening hours, ...).
+- **Filler phrases** ("Einen Moment, ich schaue nach...") to bridge latency on slow
+  tool calls (MCP/vision), never on quick commands like turning.
+
 ## Architecture
 
-The system consists of three main components running in parallel:
+Four services run together:
 
-1. **Reachy Mini Daemon** - Controls the robot hardware (or simulation)
-2. **Bot Service** - Processes vision and speech, coordinates robot actions
-3. **NeMo Agent Service** - Handles AI agent logic with intelligent routing between models
+| Service  | What                                                              | Port |
+|----------|-------------------------------------------------------------------|------|
+| `bot`    | pipecat voice/video pipeline, robot control, WebRTC frontend      | 7860 (WebRTC), 7861 (internal control API) |
+| `nat`    | NeMo Agent Toolkit: LLM router + tool-calling agent                | 8001 |
+| `mcp`    | Office availability/booking MCP server (FastMCP)                   | 8002 |
+| `webapp` | Live office-occupancy dashboard (reads/writes the same booking DB) | 8003 |
 
-![System Architecture](ces_tutorial_arch.png)
+```
+                     ┌─────────────┐
+   Browser  ◄──WebRTC──►   bot      │──HTTP (control API)──►  Reachy Mini daemon
+  (mic/cam/speaker)   └──────┬──────┘
+                             │ HTTP (chat completions)
+                             ▼
+                      ┌─────────────┐        ┌──────────────┐
+                      │     nat     │◄──MCP──►│     mcp      │◄──┐
+                      │ router+agent│        │ (booking DB) │   │ shared
+                      └─────────────┘        └──────────────┘   │ SQLite
+                                                     ▲            │
+                                              ┌──────┴──────┐    │
+                                              │   webapp    │────┘
+                                              │ (dashboard) │
+                                              └─────────────┘
+```
+
+The NAT agent has its own persistent memory (`nat/src/ces_tutorial/agent_memory.db`,
+separate from the office booking DB) and calls out to web search independently.
 
 ## Prerequisites
 
 - Python 3.10+
 - [uv](https://github.com/astral-sh/uv) package manager
-- NVIDIA API Key (for Nemotron models)
-- ElevenLabs API Key (for text-to-speech)
+- API keys: OpenAI (STT/TTS/vision/chat), NVIDIA (for `nat`), ElevenLabs (optional TTS voice), HF token
 
-## Setup Instructions
+## Setup
 
-### 1. Clone and Navigate to Repository
+### 1. Create the environment file
 
-```bash
-cd /path/to/reachy-personal-assistant
-```
-
-### 2. Create Environment File
-
-Create a `.env` file in the main directory with your API keys:
+Create a `.env` in the repo root:
 
 ```bash
-NVIDIA_API_KEY=your_nvidia_api_key_here
-ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
+OPENAI_API_KEY=...
+NVIDIA_API_KEY=...
+ELEVENLABS_API_KEY=...
+HF_TOKEN=...
+REACHY_USE_SIM=true        # or false for real hardware
+REACHY_ROBOT_NAME=reachy_mini
+REACHY_HOST=...            # only needed for real hardware
 ```
 
-### 3. Setup Bot Service
-
-In a terminal window:
+### 2. Install each service's dependencies
 
 ```bash
-cd bot
-uv venv
-uv sync
+cd bot && uv sync && cd ..
+cd nat && uv sync && cd ..
+cd office-mcp && uv sync && cd ..
 ```
 
-### 4. Setup NeMo Agent Service
+### 3. Start the Reachy Mini daemon (separate from the four services below)
 
-In a separate terminal window:
-
-```bash
-cd nat
-uv venv
-uv sync
-```
-
-## Running the System
-
-You'll need **three terminal windows** running simultaneously.
-
-### Terminal 1: Start Reachy Mini Daemon
-
-Navigate to the `bot` directory and start the robot daemon:
-
-**For macOS:**
+**macOS:**
 ```bash
 cd bot
 uv run mjpython -m reachy_mini.daemon.app.main --sim --no-localhost-only
 ```
 
-**For Linux:**
+**Linux:**
 ```bash
 cd bot
 uv run -m reachy_mini.daemon.app.main --sim --no-localhost-only
 ```
 
-*Note: The `--sim` flag runs the robot in simulation mode. Remove it if using actual hardware.*
+Drop `--sim` to run on real hardware.
 
-### Terminal 2: Start Bot Service
+## Running everything else
 
-In the `bot` directory:
-
-```bash
-cd bot
-uv run --env-file ../.env python main.py
-```
-
-This service handles:
-- Vision processing through the robot's camera
-- Speech recognition and text-to-speech
-- Robot movement coordination
-- Emotional expression through dance moves
-
-### Terminal 3: Start NeMo Agent Service
-
-In the `nat` directory:
+A centralized CLI starts/stops/restarts all four services (`bot`, `nat`, `mcp`, `webapp`) in
+one terminal, with combined, color-tagged, filtered logs:
 
 ```bash
-cd nat
-uv run --env-file ../.env nat serve --config_file src/ces_tutorial/config.yml --port 8001
+# one-time: add scripts/ to your PATH (see scripts/dev.py header / ask your shell rc)
+reachy-start              # start everything, Ctrl+C to stop
+reachy-start bot nat      # start only specific services
+reachy-stop               # kill whatever's on the known ports
+reachy-restart            # stop then start
+reachy-status             # show which services are up
 ```
 
-This launches the NeMo Agent Toolkit server with intelligent model routing capabilities.
+Or directly, without the PATH setup:
 
-## How It Works
+```bash
+python3 scripts/dev.py start
+```
 
-1. **Vision & Audio Input**: The bot captures visual information and listens for speech
-2. **Agent Processing**: The NeMo Agent router intelligently selects the appropriate model:
-   - Text queries → Nemotron nano text model
-   - Visual queries → Nemotron nano VLM
-   - Action requests → REACT agent with tool calling
-3. **Robot Actions**: Based on the agent's response, the bot executes movements, expressions, or speaks
+Then open **http://localhost:7860/client** in a browser for the voice/video call, and
+**http://localhost:8003** for the office occupancy dashboard.
 
-## Demo
-
-Check out `ces_tutorial.mp4` to see the system in action!
+Console log level defaults to `INFO` (quiet); set `LOG_LEVEL=DEBUG` before starting to see
+full per-frame pipeline tracing.
 
 ## Project Structure
 
 ```
-reachy-personal-assistant/
-├── bot/                    # Robot control and vision/speech processing
-│   ├── main.py            # Main bot orchestration
-│   ├── nat_vision_llm.py  # Vision and LLM integration
-│   └── services/          # Robot services (moves, speech, etc.)
-├── nat/                    # NeMo Agent Toolkit configuration
+reachy-office-manager/
+├── bot/                        # pipecat voice/video pipeline + robot control
+│   ├── main.py                 # pipeline assembly, WebRTC transport, greeting
+│   ├── nat_vision_llm.py       # routes chat + on-demand vision to the nat agent
+│   └── services/
+│       ├── reachy_service.py   # robot motion/camera/gesture control
+│       ├── control_api.py      # HTTP bridge so `nat` (separate process) can drive the robot
+│       ├── processor.py        # filler-phrase / wobble frame processor
+│       └── ...
+├── nat/                         # NeMo Agent Toolkit: router + tool-calling agent
 │   └── src/ces_tutorial/
-│       ├── config.yml     # Agent configuration
-│       └── functions/     # Router and agent implementations
-└── .env                   # API keys (create this file)
+│       ├── config.yml           # LLM, tools, system prompt, routing config
+│       ├── memory_store.py      # persistent cross-conversation memory (SQLite)
+│       └── functions/           # reachy_* tools, web_search, remember/recall, MCP wrappers
+├── office-mcp/                  # office availability/booking MCP server + dashboard
+│   ├── mcp_server.py            # FastMCP tools (list/book/release desks & rooms)
+│   ├── office_layout.py         # room/desk layout definitions
+│   ├── store.py                 # booking state (SQLite)
+│   ├── webapp.py                # dashboard backend
+│   └── frontend/                # dashboard UI (floor plan, live activity feed)
+├── scripts/
+│   ├── dev.py                   # centralized launcher (start/stop/status, colored logs)
+│   └── reachy, reachy-start/stop/restart/status   # thin CLI wrappers around dev.py
+└── .env                         # API keys (create this, gitignored)
 ```
 
 ## Troubleshooting
 
-- **Port conflicts**: Ensure port 8001 is available for the NeMo Agent service
-- **API key errors**: Verify your `.env` file is properly formatted and contains valid keys
-- **Robot connection issues**: Check that the Reachy daemon started successfully before launching the bot service
+- **Port conflicts**: `reachy-status` shows what's up; `reachy-stop` frees all four ports.
+- **API key errors**: verify `.env` is in the repo root and has valid keys.
+- **Robot connection issues**: make sure the Reachy Mini daemon is running before `bot`.
+- **Noisy logs**: default level is `INFO` on purpose; `LOG_LEVEL=DEBUG reachy-start` for full tracing.
+- **MCP tool name errors**: tools are wired via `mcp_tool_wrapper` (not `mcp_client`) in
+  `nat/src/ces_tutorial/config.yml` — the latter prefixes tool names with `office_tools.`,
+  which OpenAI's tool-calling API rejects.
 
 ## Resources
 
 - [NVIDIA NeMo Agent Toolkit](https://github.com/NVIDIA/NeMo-Agent-Toolkit)
 - [Reachy Mini Robot](https://www.pollen-robotics.com/)
-- [NVIDIA Nemotron Models](https://build.nvidia.com/)
-
+- [pipecat](https://github.com/pipecat-ai/pipecat)
