@@ -8,8 +8,6 @@ Built on the **NVIDIA NeMo Agent Toolkit** (tool-calling agent + LLM router) and
 **pipecat** (real-time voice/video pipeline), with a custom **office availability/booking
 MCP server** and a live web dashboard.
 
-![Reachy Mini Robot Demo](ces_tutorial.png)
-
 ## What it does
 
 - **Voice conversation** over WebRTC (browser mic/speaker), German by default.
